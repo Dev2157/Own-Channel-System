@@ -1,9 +1,7 @@
 import discord
-from discord import app_commands
 from discord.ext import commands
 from discord.ui import View, button
 
-# Słownik do śledzenia aktywnych pokoi: {channel_id: owner_id}
 active_channels = {}
 
 class VoiceControlPanel(View):
@@ -41,43 +39,27 @@ class VoiceControlPanel(View):
 class JoinToCreateCog(commands.Cog):
     def __init__(self, bot: commands.Bot):
         self.bot = bot
-
-    # Komenda rejestrująca Slash Commands
-    @commands.command(name="sync_j2c")
-    @commands.has_permissions(administrator=True)
-    async def sync_j2c(self, ctx: commands.Context):
-        await self.bot.tree.sync()
-        await ctx.send("✅ Zsynchronizowano komendy slash!")
-
-    @app_commands.command(name="setup_j2c", description="Stwarza kategroię i lobby do tworzenia kanałów")
-    @app_commands.checks.has_permissions(administrator=True)
-    async def setup_j2c(self, interaction: discord.Interaction):
-        guild = interaction.guild
-        
-        # Tworzenie nowej kategorii oraz kanału-generatora
-        category = await guild.create_category(name="🔊 Kanały Prywatne")
-        generator = await guild.create_voice_channel(name="➕ Stwórz Kanał", category=category)
-
-        await interaction.response.send_message(
-            f"✅ System aktywowany!\n"
-            f"• Kategoria: **{category.name}**\n"
-            f"• Kanał generatora: {generator.mention}", 
-            ephemeral=True
-        )
+        print(" -> [DEV] Plugin JoinToCreate został pomyślnie załadowany do pamięci!")
 
     @commands.Cog.listener()
     async def on_voice_state_update(self, member: discord.Member, before: discord.VoiceState, after: discord.VoiceState):
-        # 1. Sprawdzanie czy użytkownik wszedł na kanał o nazwie "➕ Stwórz Kanał"
-        if after.channel and after.channel.name == "➕ Stwórz Kanał":
+        # Wypisujemy absolutnie każdy ruch na głosowych w konsoli DEV
+        if after.channel:
+            print(f"[DEV VOICE] {member.name} wszedł na: {after.channel.name}")
+
+        # Wykrywanie wejścia na kanał generatora
+        if after.channel and any(kw in after.channel.name for kw in ["➕", "Stwórz", "J2C", "Join"]):
+            print(f"[DEV LOG] Wykryto wejście na generator przez: {member.name}")
             guild = member.guild
             category = after.channel.category
 
             overwrites = {
-                member: discord.PermissionOverwrite(manage_channels=True, move_members=True, connect=True)
+                member: discord.PermissionOverwrite(
+                    manage_channels=True, move_members=True, connect=True, view_channel=True
+                )
             }
 
             try:
-                # Tworzenie nowego kanału
                 new_channel = await guild.create_voice_channel(
                     name=f"🔊 Pokój {member.display_name}",
                     category=category,
@@ -88,23 +70,28 @@ class JoinToCreateCog(commands.Cog):
                 await member.move_to(new_channel)
 
                 embed = discord.Embed(
-                    title="⚙️ Panel Sterowania Kanałem",
-                    description="Zarządzaj swoim kanałem głosowym za pomocą przycisków poniżej.",
-                    color=discord.Color.blurple()
+                    title="⚙️ Panel Sterowania Kanałem (DEV)",
+                    description="Pomyślnie utworzono Twój kanał tymczasowy.",
+                    color=discord.Color.green()
                 )
                 embed.set_footer(text=f"Właściciel: {member.display_name}")
 
                 view = VoiceControlPanel(owner_id=member.id)
                 await new_channel.send(embed=embed, view=view)
+                print("[DEV LOG] Sukces! Kanał i panel utworzone.")
 
             except Exception as e:
-                print(f"[J2C ERROR] Błąd podczas tworzenia kanału: {e}")
+                print(f"[DEV BŁĄD] Wystąpił wyjątek podczas tworzenia kanału: {e}")
 
-        # 2. Usuwanie pustych pokoi tymczasowych
+        # Czyszczenie kanałów
         if before.channel and before.channel.id in active_channels:
             if len(before.channel.members) == 0:
-                del active_channels[before.channel.id]
-                await before.channel.delete()
+                try:
+                    del active_channels[before.channel.id]
+                    await before.channel.delete()
+                    print(f"[DEV LOG] Usunięto pusty kanał: {before.channel.name}")
+                except Exception as e:
+                    print(f"[DEV BŁĄD] Nie udało się usunąć kanału: {e}")
 
 
 async def setup(bot: commands.Bot):
