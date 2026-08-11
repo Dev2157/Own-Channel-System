@@ -3,6 +3,7 @@ from discord.ext import commands
 from discord.ui import View, button
 
 active_channels = {}
+LOG_CHANNEL_ID = None  # Przechowuje ID kanału logów w pamięci
 
 class VoiceControlPanel(View):
     def __init__(self, owner_id: int):
@@ -39,59 +40,79 @@ class VoiceControlPanel(View):
 class JoinToCreateCog(commands.Cog):
     def __init__(self, bot: commands.Bot):
         self.bot = bot
-        print(" -> [DEV] Plugin JoinToCreate został pomyślnie załadowany do pamięci!")
+
+    async def send_log(self, guild: discord.Guild, message: str):
+        """Pomocnicza funkcja do wysyłania logów na Discorda"""
+        global LOG_CHANNEL_ID
+        if LOG_CHANNEL_ID:
+            log_chan = guild.get_channel(LOG_CHANNEL_ID)
+            if log_chan:
+                await log_chan.send(f"🛠️ **[J2C DEV LOG]** {message}")
+
+    # Komenda do podłączenia podglądu logów na czacie Discorda
+    @commands.command(name="j2c_logs")
+    @commands.has_permissions(administrator=True)
+    async def setup_logs(self, ctx: commands.Context):
+        global LOG_CHANNEL_ID
+        channel = await ctx.guild.create_text_channel(name="j2c-logi-dev")
+        LOG_CHANNEL_ID = channel.id
+        await ctx.send(f"✅ Utworzono kanał logów: {channel.mention}. Wszystkie zdarzenia bota będą tu wypisywane!")
 
     @commands.Cog.listener()
     async def on_voice_state_update(self, member: discord.Member, before: discord.VoiceState, after: discord.VoiceState):
-        # Wypisujemy absolutnie każdy ruch na głosowych w konsoli DEV
+        guild = member.guild
+
+        # 1. Wykrywanie przejścia na jakikolwiek kanał głosowy
         if after.channel:
-            print(f"[DEV VOICE] {member.name} wszedł na: {after.channel.name}")
+            await self.send_log(guild, f"Użytkownik `{member.name}` wszedł na kanał głosowy: **{after.channel.name}**")
 
-        # Wykrywanie wejścia na kanał generatora
-        if after.channel and any(kw in after.channel.name for kw in ["➕", "Stwórz", "J2C", "Join"]):
-            print(f"[DEV LOG] Wykryto wejście na generator przez: {member.name}")
-            guild = member.guild
-            category = after.channel.category
+            # Wykrywanie generatora (kanał musi mieć w nazwie ➕, Stwórz, J2C lub Join)
+            if any(kw in after.channel.name for kw in ["➕", "Stwórz", "J2C", "Join"]):
+                await self.send_log(guild, "Rozpoczynam tworzenie nowego pokoju...")
 
-            overwrites = {
-                member: discord.PermissionOverwrite(
-                    manage_channels=True, move_members=True, connect=True, view_channel=True
-                )
-            }
+                category = after.channel.category
+                overwrites = {
+                    member: discord.PermissionOverwrite(
+                        manage_channels=True, move_members=True, connect=True, view_channel=True
+                    )
+                }
 
-            try:
-                new_channel = await guild.create_voice_channel(
-                    name=f"🔊 Pokój {member.display_name}",
-                    category=category,
-                    overwrites=overwrites
-                )
+                try:
+                    # Tworzenie kanału
+                    new_channel = await guild.create_voice_channel(
+                        name=f"🔊 Pokój {member.display_name}",
+                        category=category,
+                        overwrites=overwrites
+                    )
 
-                active_channels[new_channel.id] = member.id
-                await member.move_to(new_channel)
+                    active_channels[new_channel.id] = member.id
+                    await member.move_to(new_channel)
 
-                embed = discord.Embed(
-                    title="⚙️ Panel Sterowania Kanałem (DEV)",
-                    description="Pomyślnie utworzono Twój kanał tymczasowy.",
-                    color=discord.Color.green()
-                )
-                embed.set_footer(text=f"Właściciel: {member.display_name}")
+                    embed = discord.Embed(
+                        title="⚙️ Panel Sterowania Kanałem",
+                        description="Zarządzaj swoim kanałem za pomocą przycisków poniżej.",
+                        color=discord.Color.blurple()
+                    )
+                    embed.set_footer(text=f"Właścinek: {member.display_name}")
 
-                view = VoiceControlPanel(owner_id=member.id)
-                await new_channel.send(embed=embed, view=view)
-                print("[DEV LOG] Sukces! Kanał i panel utworzone.")
+                    view = VoiceControlPanel(owner_id=member.id)
+                    await new_channel.send(embed=embed, view=view)
+                    await self.send_log(guild, f"✅ Sukces! Utworzono kanał {new_channel.mention} i wysłano panel.")
 
-            except Exception as e:
-                print(f"[DEV BŁĄD] Wystąpił wyjątek podczas tworzenia kanału: {e}")
+                except discord.Forbidden:
+                    await self.send_log(guild, "❌ **BŁĄD BRAKU UPRAWNIEŃ!** Bot nie posiada uprawnień do tworzenia kanałów lub przenoszenia osób.")
+                except Exception as e:
+                    await self.send_log(guild, f"❌ **BŁĄD:** {e}")
 
-        # Czyszczenie kanałów
+        # 2. Wyjście z kanału i czyszczenie
         if before.channel and before.channel.id in active_channels:
             if len(before.channel.members) == 0:
                 try:
                     del active_channels[before.channel.id]
                     await before.channel.delete()
-                    print(f"[DEV LOG] Usunięto pusty kanał: {before.channel.name}")
+                    await self.send_log(guild, f"🗑️ Usunięto pusty kanał tymczasowy: **{before.channel.name}**")
                 except Exception as e:
-                    print(f"[DEV BŁĄD] Nie udało się usunąć kanału: {e}")
+                    await self.send_log(guild, f"❌ Błąd podczas usuwania kanału: {e}")
 
 
 async def setup(bot: commands.Bot):
