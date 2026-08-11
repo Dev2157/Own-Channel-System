@@ -3,8 +3,8 @@ from discord.ext import commands
 from discord.ui import View, button
 
 # ID Twojego kanału-generatora oraz kategorii dla nowych kanałów
-GENERATOR_CHANNEL_ID = 123456789012345678  # Zamień na własne ID
-CATEGORY_ID = 123456789012345678           # Zamień na własne ID
+GENERATOR_CHANNEL_ID = 1535212685774430208  # Zamień na własne ID
+CATEGORY_ID = 1535213171051331614           # Zamień na własne ID
 
 # Słownik przechowujący aktywne kanały: {channel_id: owner_id}
 active_channels = {}
