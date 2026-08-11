@@ -1,9 +1,20 @@
-import discord
-from discord.ext import commands
-from discord.ui import View, button
+import subprocess
+import sys
+
+# Automatyczna instalacja discord.py w środowisku uruchomieniowym
+try:
+    import discord
+    from discord.ext import commands
+    from discord.ui import View, button
+except ImportError:
+    subprocess.check_call([sys.executable, "-m", "pip", "install", "discord.py"])
+    import discord
+    from discord.ext import commands
+    from discord.ui import View, button
 
 active_channels = {}
 LOG_CHANNEL_ID = None  # Przechowuje ID kanału logów w pamięci
+
 
 class VoiceControlPanel(View):
     def __init__(self, owner_id: int):
@@ -12,7 +23,10 @@ class VoiceControlPanel(View):
 
     async def interaction_check(self, interaction: discord.Interaction) -> bool:
         if interaction.user.id != self.owner_id:
-            await interaction.response.send_message("❌ Tylko właściciel tego kanału może korzystać z panelu!", ephemeral=True)
+            await interaction.response.send_message(
+                "❌ Tylko właściciel tego kanału może korzystać z panelu!",
+                ephemeral=True
+            )
             return False
         return True
 
@@ -93,7 +107,7 @@ class JoinToCreateCog(commands.Cog):
                         description="Zarządzaj swoim kanałem za pomocą przycisków poniżej.",
                         color=discord.Color.blurple()
                     )
-                    embed.set_footer(text=f"Właścinek: {member.display_name}")
+                    embed.set_footer(text=f"Właściciel: {member.display_name}")
 
                     view = VoiceControlPanel(owner_id=member.id)
                     await new_channel.send(embed=embed, view=view)
