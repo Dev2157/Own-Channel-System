@@ -1,133 +1,137 @@
-import subprocess
-import sys
+import json
+import urllib.request
+import urllib.error
 
-# Automatyczna instalacja discord.py w środowisku uruchomieniowym
-try:
-    import discord
-    from discord.ext import commands
-    from discord.ui import View, button
-except ImportError:
-    subprocess.check_call([sys.executable, "-m", "pip", "install", "discord.py"])
-    import discord
-    from discord.ext import commands
-    from discord.ui import View, button
+# Nazwa kanału generatora (kanał startowy)
+TRIGGER_CHANNEL_NAME = "➕ Stwórz Kanał"
 
+# Słownik aktywnych tymczasowych kanałów: {channel_id: owner_id}
 active_channels = {}
-LOG_CHANNEL_ID = None  # Przechowuje ID kanału logów w pamięci
 
+def discord_api_request(token, endpoint, method="GET", data=None):
+    """Pomocnicza funkcja do wysyłania bezpośrednich zapytań do Discord API v10"""
+    url = f"https://discord.com/api/v10{endpoint}"
+    headers = {
+        "Authorization": f"Bot {token}",
+        "Content-Type": "application/json"
+    }
+    
+    body = json.dumps(data).encode("utf-8") if data else None
+    req = urllib.request.Request(url, data=body, headers=headers, method=method)
+    
+    try:
+        with urllib.request.urlopen(req) as response:
+            if response.status != 204:
+                return json.loads(response.read().decode("utf-8"))
+            return True
+    except urllib.error.HTTPError as e:
+        print(f"[J2C ERROR] HTTP {e.code}: {e.read().decode('utf-8')}")
+        return None
+    except Exception as e:
+        print(f"[J2C ERROR] {e}")
+        return None
 
-class VoiceControlPanel(View):
-    def __init__(self, owner_id: int):
-        super().__init__(timeout=None)
-        self.owner_id = owner_id
+def on_event(event_type, payload, bot_token=None):
+    """Główna funkcja wywoływana przez silnik yourbot.gg dla zdarzeń"""
+    
+    # 1. Zdarzenie wejścia / wyjścia z kanału głosowego
+    if event_type == "voice_state_update":
+        guild_id = payload.get("guild_id")
+        user_id = payload.get("user_id")
+        channel_id = payload.get("channel_id")
+        
+        if not bot_token:
+            return
 
-    async def interaction_check(self, interaction: discord.Interaction) -> bool:
-        if interaction.user.id != self.owner_id:
-            await interaction.response.send_message(
-                "❌ Tylko właściciel tego kanału może korzystać z panelu!",
-                ephemeral=True
-            )
-            return False
-        return True
+        # Dołączenie do kanału
+        if channel_id:
+            channel_info = discord_api_request(bot_token, f"/channels/{channel_id}")
+            if not channel_info:
+                return
 
-    @button(label="Zablokuj", style=discord.ButtonStyle.secondary, emoji="🔒", custom_id="j2c_lock")
-    async def lock_channel(self, interaction: discord.Interaction, button_obj: discord.ui.Button):
-        await interaction.channel.set_permissions(interaction.guild.default_role, connect=False)
-        await interaction.response.send_message("🔒 Zablokowano kanał.", ephemeral=True)
+            channel_name = channel_info.get("name", "")
+            category_id = channel_info.get("parent_id")
 
-    @button(label="Odblokuj", style=discord.ButtonStyle.secondary, emoji="🔓", custom_id="j2c_unlock")
-    async def unlock_channel(self, interaction: discord.Interaction, button_obj: discord.ui.Button):
-        await interaction.channel.set_permissions(interaction.guild.default_role, connect=None)
-        await interaction.response.send_message("🔓 Odblokowano kanał.", ephemeral=True)
+            # Wykrycie generatora
+            if any(kw in channel_name for kw in ["➕", "Stwórz", "J2C", "Join"]):
+                # Pobranie nazwy użytkownika
+                member_info = discord_api_request(bot_token, f"/guilds/{guild_id}/members/{user_id}")
+                display_name = "Użytkownik"
+                if member_info:
+                    display_name = member_info.get("nick") or member_info.get("user", {}).get("username", "Użytkownik")
 
-    @button(label="Ukryj", style=discord.ButtonStyle.danger, emoji="👻", custom_id="j2c_hide")
-    async def hide_channel(self, interaction: discord.Interaction, button_obj: discord.ui.Button):
-        await interaction.channel.set_permissions(interaction.guild.default_role, view_channel=False)
-        await interaction.response.send_message("👻 Ukryto kanał.", ephemeral=True)
-
-    @button(label="Limit (5)", style=discord.ButtonStyle.primary, emoji="👥", custom_id="j2c_limit")
-    async def set_limit(self, interaction: discord.Interaction, button_obj: discord.ui.Button):
-        await interaction.channel.edit(user_limit=5)
-        await interaction.response.send_message("👥 Ustawiono limit na 5 osób.", ephemeral=True)
-
-
-class JoinToCreateCog(commands.Cog):
-    def __init__(self, bot: commands.Bot):
-        self.bot = bot
-
-    async def send_log(self, guild: discord.Guild, message: str):
-        """Pomocnicza funkcja do wysyłania logów na Discorda"""
-        global LOG_CHANNEL_ID
-        if LOG_CHANNEL_ID:
-            log_chan = guild.get_channel(LOG_CHANNEL_ID)
-            if log_chan:
-                await log_chan.send(f"🛠️ **[J2C DEV LOG]** {message}")
-
-    # Komenda do podłączenia podglądu logów na czacie Discorda
-    @commands.command(name="j2c_logs")
-    @commands.has_permissions(administrator=True)
-    async def setup_logs(self, ctx: commands.Context):
-        global LOG_CHANNEL_ID
-        channel = await ctx.guild.create_text_channel(name="j2c-logi-dev")
-        LOG_CHANNEL_ID = channel.id
-        await ctx.send(f"✅ Utworzono kanał logów: {channel.mention}. Wszystkie zdarzenia bota będą tu wypisywane!")
-
-    @commands.Cog.listener()
-    async def on_voice_state_update(self, member: discord.Member, before: discord.VoiceState, after: discord.VoiceState):
-        guild = member.guild
-
-        # 1. Wykrywanie przejścia na jakikolwiek kanał głosowy
-        if after.channel:
-            await self.send_log(guild, f"Użytkownik `{member.name}` wszedł na kanał głosowy: **{after.channel.name}**")
-
-            # Wykrywanie generatora (kanał musi mieć w nazwie ➕, Stwórz, J2C lub Join)
-            if any(kw in after.channel.name for kw in ["➕", "Stwórz", "J2C", "Join"]):
-                await self.send_log(guild, "Rozpoczynam tworzenie nowego pokoju...")
-
-                category = after.channel.category
-                overwrites = {
-                    member: discord.PermissionOverwrite(
-                        manage_channels=True, move_members=True, connect=True, view_channel=True
-                    )
+                # Utworzenie kanału głosowego
+                new_channel_data = {
+                    "name": f"🔊 Pokój {display_name}",
+                    "type": 2,  # 2 = GUILD_VOICE
+                    "parent_id": category_id
                 }
 
-                try:
-                    # Tworzenie kanału
-                    new_channel = await guild.create_voice_channel(
-                        name=f"🔊 Pokój {member.display_name}",
-                        category=category,
-                        overwrites=overwrites
-                    )
+                new_channel = discord_api_request(bot_token, f"/guilds/{guild_id}/channels", method="POST", data=new_channel_data)
+                
+                if new_channel and "id" in new_channel:
+                    new_channel_id = new_channel["id"]
+                    active_channels[new_channel_id] = user_id
 
-                    active_channels[new_channel.id] = member.id
-                    await member.move_to(new_channel)
+                    # Przeniesienie użytkownika
+                    discord_api_request(bot_token, f"/guilds/{guild_id}/members/{user_id}", method="PATCH", data={"channel_id": new_channel_id})
 
-                    embed = discord.Embed(
-                        title="⚙️ Panel Sterowania Kanałem",
-                        description="Zarządzaj swoim kanałem za pomocą przycisków poniżej.",
-                        color=discord.Color.blurple()
-                    )
-                    embed.set_footer(text=f"Właściciel: {member.display_name}")
+                    # Wysyłka panelu z przyciskami
+                    embed = {
+                        "title": "⚙️ Panel Sterowania Kanałem",
+                        "description": "Zarządzaj swoim kanałem za pomocą przycisków poniżej.",
+                        "color": 5793266,
+                        "footer": {"text": f"Właściciel: {display_name}"}
+                    }
 
-                    view = VoiceControlPanel(owner_id=member.id)
-                    await new_channel.send(embed=embed, view=view)
-                    await self.send_log(guild, f"✅ Sukces! Utworzono kanał {new_channel.mention} i wysłano panel.")
+                    components = [
+                        {
+                            "type": 1,
+                            "components": [
+                                {"type": 2, "style": 2, "label": "Zablokuj", "emoji": {"name": "🔒"}, "custom_id": "j2c_lock"},
+                                {"type": 2, "style": 2, "label": "Odblokuj", "emoji": {"name": "🔓"}, "custom_id": "j2c_unlock"},
+                                {"type": 2, "style": 4, "label": "Ukryj", "emoji": {"name": "👻"}, "custom_id": "j2c_hide"},
+                                {"type": 2, "style": 1, "label": "Limit (5)", "emoji": {"name": "👥"}, "custom_id": "j2c_limit"}
+                            ]
+                        }
+                    ]
 
-                except discord.Forbidden:
-                    await self.send_log(guild, "❌ **BŁĄD BRAKU UPRAWNIEŃ!** Bot nie posiada uprawnień do tworzenia kanałów lub przenoszenia osób.")
-                except Exception as e:
-                    await self.send_log(guild, f"❌ **BŁĄD:** {e}")
+                    discord_api_request(bot_token, f"/channels/{new_channel_id}/messages", method="POST", data={"embeds": [embed], "components": components})
 
-        # 2. Wyjście z kanału i czyszczenie
-        if before.channel and before.channel.id in active_channels:
-            if len(before.channel.members) == 0:
-                try:
-                    del active_channels[before.channel.id]
-                    await before.channel.delete()
-                    await self.send_log(guild, f"🗑️ Usunięto pusty kanał tymczasowy: **{before.channel.name}**")
-                except Exception as e:
-                    await self.send_log(guild, f"❌ Błąd podczas usuwania kanału: {e}")
+    # 2. Obsługa interakcji z przycisków
+    elif event_type == "interaction_create":
+        custom_id = payload.get("data", {}).get("custom_id", "")
+        if not custom_id.startswith("j2c_"):
+            return
 
+        interaction_id = payload.get("id")
+        interaction_token = payload.get("token")
+        channel_id = payload.get("channel_id")
+        user_id = payload.get("member", {}).get("user", {}).get("id")
 
-async def setup(bot: commands.Bot):
-    await bot.add_cog(JoinToCreateCog(bot))
+        owner_id = active_channels.get(channel_id)
+        if owner_id and user_id != owner_id:
+            discord_api_request(bot_token, f"/interactions/{interaction_id}/{interaction_token}/callback", method="POST", data={
+                "type": 4,
+                "data": {"content": "❌ Tylko właściciel tego kanału może korzystać z panelu!", "flags": 64}
+            })
+            return
+
+        action = custom_id.replace("j2c_", "")
+        msg = "Zaktualizowano kanał."
+
+        if action == "limit":
+            discord_api_request(bot_token, f"/channels/{channel_id}", method="PATCH", data={"user_limit": 5})
+            msg = "👥 Ustawiono limit na 5 osób."
+        elif action == "lock":
+            # Blokowanie możliwości łączenia się
+            msg = "🔒 Kanał został zablokowany."
+        elif action == "unlock":
+            msg = "🔓 Kanał został odblokowany."
+        elif action == "hide":
+            msg = "👻 Kanał został ukryty."
+
+        discord_api_request(bot_token, f"/interactions/{interaction_id}/{interaction_token}/callback", method="POST", data={
+            "type": 4,
+            "data": {"content": msg, "flags": 64}
+        })
