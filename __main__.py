@@ -3,9 +3,8 @@ from discord import app_commands
 from discord.ext import commands
 from discord.ui import View, button
 
-# Słowniki przechowujące konfigurację serwerów i aktywne pokoje
-guild_configs = {}  # {guild_id: {"generator_id": int, "category_id": int}}
-active_channels = {}  # {channel_id: owner_id}
+# Słownik do śledzenia aktywnych pokoi: {channel_id: owner_id}
+active_channels = {}
 
 class VoiceControlPanel(View):
     def __init__(self, owner_id: int):
@@ -38,64 +37,75 @@ class VoiceControlPanel(View):
         await interaction.channel.edit(user_limit=5)
         await interaction.response.send_message("👥 Ustawiono limit na 5 osób.", ephemeral=True)
 
+
 class JoinToCreateCog(commands.Cog):
     def __init__(self, bot: commands.Bot):
         self.bot = bot
 
-    @app_commands.command(name="setup_j2c", description="Konfiguruje system Join to Create na serwerze.")
+    # Komenda rejestrująca Slash Commands
+    @commands.command(name="sync_j2c")
+    @commands.has_permissions(administrator=True)
+    async def sync_j2c(self, ctx: commands.Context):
+        await self.bot.tree.sync()
+        await ctx.send("✅ Zsynchronizowano komendy slash!")
+
+    @app_commands.command(name="setup_j2c", description="Stwarza kategroię i lobby do tworzenia kanałów")
     @app_commands.checks.has_permissions(administrator=True)
     async def setup_j2c(self, interaction: discord.Interaction):
         guild = interaction.guild
         
-        # 1. Tworzenie kategorii i generatora
+        # Tworzenie nowej kategorii oraz kanału-generatora
         category = await guild.create_category(name="🔊 Kanały Prywatne")
         generator = await guild.create_voice_channel(name="➕ Stwórz Kanał", category=category)
 
-        guild_configs[guild.id] = {
-            "generator_id": generator.id,
-            "category_id": category.id
-        }
-
-        await interaction.response.send_message(f"✅ System skonfigurowany! Kanał generatora: {generator.mention}", ephemeral=True)
+        await interaction.response.send_message(
+            f"✅ System aktywowany!\n"
+            f"• Kategoria: **{category.name}**\n"
+            f"• Kanał generatora: {generator.mention}", 
+            ephemeral=True
+        )
 
     @commands.Cog.listener()
     async def on_voice_state_update(self, member: discord.Member, before: discord.VoiceState, after: discord.VoiceState):
-        guild_id = member.guild.id
-        config = guild_configs.get(guild_id)
-
-        # Dołączenie do generatora
-        if config and after.channel and after.channel.id == config["generator_id"]:
+        # 1. Sprawdzanie czy użytkownik wszedł na kanał o nazwie "➕ Stwórz Kanał"
+        if after.channel and after.channel.name == "➕ Stwórz Kanał":
             guild = member.guild
-            category = guild.get_channel(config["category_id"])
+            category = after.channel.category
 
             overwrites = {
                 member: discord.PermissionOverwrite(manage_channels=True, move_members=True, connect=True)
             }
 
-            new_channel = await guild.create_voice_channel(
-                name=f"🔊 Pokój {member.display_name}",
-                category=category,
-                overwrites=overwrites
-            )
+            try:
+                # Tworzenie nowego kanału
+                new_channel = await guild.create_voice_channel(
+                    name=f"🔊 Pokój {member.display_name}",
+                    category=category,
+                    overwrites=overwrites
+                )
 
-            active_channels[new_channel.id] = member.id
-            await member.move_to(new_channel)
+                active_channels[new_channel.id] = member.id
+                await member.move_to(new_channel)
 
-            embed = discord.Embed(
-                title="⚙️ Panel Sterowania Kanałem",
-                description="Zarządzaj swoim kanałem za pomocą przycisków poniżej.",
-                color=discord.Color.blurple()
-            )
-            embed.set_footer(text=f"Właściciel: {member.display_name}")
+                embed = discord.Embed(
+                    title="⚙️ Panel Sterowania Kanałem",
+                    description="Zarządzaj swoim kanałem głosowym za pomocą przycisków poniżej.",
+                    color=discord.Color.blurple()
+                )
+                embed.set_footer(text=f"Właściciel: {member.display_name}")
 
-            view = VoiceControlPanel(owner_id=member.id)
-            await new_channel.send(embed=embed, view=view)
+                view = VoiceControlPanel(owner_id=member.id)
+                await new_channel.send(embed=embed, view=view)
 
-        # Opuszczenie i czyszczenie pustych pokoi
+            except Exception as e:
+                print(f"[J2C ERROR] Błąd podczas tworzenia kanału: {e}")
+
+        # 2. Usuwanie pustych pokoi tymczasowych
         if before.channel and before.channel.id in active_channels:
             if len(before.channel.members) == 0:
                 del active_channels[before.channel.id]
                 await before.channel.delete()
+
 
 async def setup(bot: commands.Bot):
     await bot.add_cog(JoinToCreateCog(bot))
